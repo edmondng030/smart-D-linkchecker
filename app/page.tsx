@@ -1,0 +1,33 @@
+"use client";
+import {useMemo,useRef,useState} from "react";
+import * as XLSX from "xlsx";
+type Status="ok"|"broken"|"restricted"|"timeout"|"error"|"invalid";
+type Result={url:string;status:Status;label:string;code?:number};
+const colOk=(v:string)=>/^[A-Z]{1,3}$/.test(v);
+const display=(r?:Result)=>r?`${r.label}${r.code?` (${r.code})`:""}`:"";
+export default function Home(){
+ const fileRef=useRef<HTMLInputElement>(null);
+ const [book,setBook]=useState<XLSX.WorkBook|null>(null),[fileName,setFileName]=useState(""),[sheetName,setSheetName]=useState("");
+ const [urlCol,setUrlCol]=useState("A"),[resultCol,setResultCol]=useState("F"),[timeout,setTimeoutValue]=useState(12);
+ const [results,setResults]=useState<Map<string,Result>>(new Map()),[running,setRunning]=useState(false),[progress,setProgress]=useState(0),[message,setMessage]=useState(""),[drag,setDrag]=useState(false);
+ const rows=useMemo(()=>{if(!book||!sheetName||!colOk(urlCol))return[];const sheet=book.Sheets[sheetName];if(!sheet?.["!ref"])return[];const rg=XLSX.utils.decode_range(sheet["!ref"]),c=XLSX.utils.decode_col(urlCol),out:{row:number;url:string}[]=[];for(let r=rg.s.r;r<=rg.e.r;r++){const url=String(sheet[XLSX.utils.encode_cell({r,c})]?.v??"").trim();if(url)out.push({row:r,url});}return out;},[book,sheetName,urlCol]);
+ const unique=useMemo(()=>[...new Set(rows.map(r=>r.url))],[rows]);
+ const stats=useMemo(()=>{const a=rows.map(r=>results.get(r.url)).filter(Boolean) as Result[];return{all:a.length,ok:a.filter(x=>x.status==="ok").length,broken:a.filter(x=>x.status==="broken").length,restricted:a.filter(x=>x.status==="restricted").length,other:a.filter(x=>["timeout","error","invalid"].includes(x.status)).length};},[rows,results]);
+ async function load(file?:File){if(!file)return;if(!/\.(xlsx|xls)$/i.test(file.name)){setMessage("請選擇 .xlsx 或 .xls 檔案。");return;}try{const wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellStyles:true});setBook(wb);setFileName(file.name);setSheetName(wb.SheetNames[0]??"");setResults(new Map());setProgress(0);setMessage("");}catch{setMessage("無法讀取檔案，請確認 Excel 沒有損壞或加密。");}}
+ async function run(){if(!book||!rows.length)return;if(!colOk(urlCol)||!colOk(resultCol)){setMessage("請使用 Excel 欄名，例如 A、F 或 AA。");return;}setRunning(true);setProgress(0);setMessage("");const next=new Map<string,Result>();try{for(let i=0;i<unique.length;i+=20){const response=await fetch("/api/check",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urls:unique.slice(i,i+20),timeoutMs:timeout*1000})});if(!response.ok)throw Error();const payload=await response.json() as {results:Result[]};payload.results.forEach(r=>next.set(r.url,r));setResults(new Map(next));setProgress(Math.round(Math.min(i+20,unique.length)/unique.length*100));}setMessage(`完成：已檢查 ${unique.length.toLocaleString()} 個唯一 URL。`);}catch{setMessage("檢查中斷；已完成的結果仍會保留，請稍後重試。");}finally{setRunning(false);}}
+ function download(){if(!book||!results.size||!colOk(resultCol))return;const sheet=book.Sheets[sheetName],c=XLSX.utils.decode_col(resultCol);rows.forEach(({row,url})=>sheet[XLSX.utils.encode_cell({r:row,c})]={t:"s",v:display(results.get(url))});const rg=sheet["!ref"]?XLSX.utils.decode_range(sheet["!ref"]):{s:{r:0,c:0},e:{r:0,c:0}};rg.e.c=Math.max(rg.e.c,c);sheet["!ref"]=XLSX.utils.encode_range(rg);XLSX.writeFile(book,`${fileName.replace(/\.(xlsx|xls)$/i,"")} - checked.xlsx`,{compression:true});}
+ return <main><header className="topbar"><div className="brand"><span className="brandMark"><i/><i/><i/></span>LinkCheck</div><span className="privacy">檔案只在你的瀏覽器內處理</span></header>
+ <section className="hero"><div className="eyebrow">Excel broken link checker</div><h1>找出失效連結，<br/><span>不用逐個打開。</span></h1><p>上載 Excel，選擇 URL 欄位，取得清楚的 HTTP 狀態並下載完成版。</p></section>
+ <section className="workspace"><div className={`dropzone ${drag?"dragging":""} ${fileName?"hasFile":""}`} role="button" tabIndex={0} onClick={()=>fileRef.current?.click()} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);load(e.dataTransfer.files[0])}}>
+ <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={e=>load(e.target.files?.[0])}/><div className="fileIcon">X</div><div><strong>{fileName||"拖放 Excel 到這裡"}</strong><p>{fileName?`${rows.length.toLocaleString()} 個 URL · ${unique.length.toLocaleString()} 個唯一 URL`:"或點擊選擇 .xlsx / .xls 檔案"}</p></div><button className="choose">{fileName?"更換檔案":"選擇檔案"}</button></div>
+ {book&&<div className="card"><div className="cardHead"><div><b>設定</b><h2>告訴我們要檢查哪裡</h2></div><small>01</small></div><div className="grid">
+ <label>工作表<select value={sheetName} onChange={e=>{setSheetName(e.target.value);setResults(new Map())}}>{book.SheetNames.map(n=><option key={n}>{n}</option>)}</select></label>
+ <label>URL 欄位<input value={urlCol} maxLength={3} onChange={e=>{setUrlCol(e.target.value.toUpperCase());setResults(new Map())}}/></label><label>結果欄位<input value={resultCol} maxLength={3} onChange={e=>setResultCol(e.target.value.toUpperCase())}/></label>
+ <label>最長等待<select value={timeout} onChange={e=>setTimeoutValue(Number(e.target.value))}><option value="8">8 秒</option><option value="12">12 秒</option><option value="20">20 秒</option></select></label></div>
+ <div className="action"><button className="primary" disabled={!rows.length||running} onClick={run}>{running?`檢查中 · ${progress}%`:"開始檢查連結"}</button><span>{rows.length?`${unique.length.toLocaleString()} 個唯一 URL 將被檢查`:"找不到可檢查的 URL"}</span></div>{running&&<div className="track"><i style={{width:`${progress}%`}}/></div>}{message&&<p className="message">{message}</p>}</div>}
+ {results.size>0&&<div className="card results"><div className="resultsHead"><div><b>結果</b><h2>檢查摘要</h2></div><button className="download" onClick={download}>下載完成版 Excel</button></div>
+ <div className="stats"><Stat n={stats.all} t="已檢查列" c="all"/><Stat n={stats.ok} t="正常" c="ok"/><Stat n={stats.broken} t="失效" c="broken"/><Stat n={stats.restricted} t="受限" c="restricted"/><Stat n={stats.other} t="逾時／錯誤" c="other"/></div>
+ <div className="tableWrap"><table><thead><tr><th>列</th><th>URL</th><th>狀態</th></tr></thead><tbody>{rows.slice(0,10).map(({row,url})=>{const r=results.get(url);return <tr key={row}><td>{row+1}</td><td title={url}>{url}</td><td><span className={`status ${r?.status||""}`}>{display(r)||"等候中"}</span></td></tr>})}</tbody></table></div></div>}</section>
+ <footer><strong>LinkCheck</strong><span>Excel 留在你的裝置上；只有 URL 會送出作可用性測試。</span></footer></main>
+}
+function Stat({n,t,c}:{n:number;t:string;c:string}){return <div><i className={c}/><strong>{n}</strong><small>{t}</small></div>}
