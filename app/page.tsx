@@ -1,10 +1,18 @@
 "use client";
 import {useMemo,useRef,useState} from "react";
 import * as XLSX from "xlsx";
+import * as XLSXStyle from "xlsx-js-style";
 type Status="ok"|"broken"|"restricted"|"timeout"|"error"|"invalid";
 type Result={url:string;status:Status;label:string;code?:number};
 const colOk=(v:string)=>/^[A-Z]{1,3}$/.test(v);
-const display=(r?:Result)=>r?`${r.label}${r.code?` (${r.code})`:""}`:"";
+const display=(r?:Result)=>{if(!r)return "";const mark=r.status==="ok"?String.fromCharCode(10003):r.status==="broken"?"!!":r.status==="restricted"||r.status==="invalid"?"?":"!";return `${mark} ${r.label}${r.code?` (${r.code})`:""}`};
+const cellStyle=(r?:Result)=>{
+ let fill="FFF2CC",font="7F6000";
+ if(r?.status==="ok"){fill="C6EFCE";font="C00000"}
+ else if(r?.status==="broken"){fill="F8696B";font="FFFFFF"}
+ else if(r?.status==="timeout"||r?.status==="error"){fill="F4B183";font="7F3600"}
+ return {fill:{patternType:"solid",fgColor:{rgb:fill}},font:{bold:true,color:{rgb:font}},alignment:{horizontal:"center",vertical:"center"}};
+};
 export default function Home(){
  const fileRef=useRef<HTMLInputElement>(null);
  const [book,setBook]=useState<XLSX.WorkBook|null>(null),[fileName,setFileName]=useState(""),[sheetName,setSheetName]=useState("");
@@ -15,7 +23,7 @@ export default function Home(){
  const stats=useMemo(()=>{const a=rows.map(r=>results.get(r.url)).filter(Boolean) as Result[];return{all:a.length,ok:a.filter(x=>x.status==="ok").length,broken:a.filter(x=>x.status==="broken").length,restricted:a.filter(x=>x.status==="restricted").length,other:a.filter(x=>["timeout","error","invalid"].includes(x.status)).length};},[rows,results]);
  async function load(file?:File){if(!file)return;if(!/\.(xlsx|xls)$/i.test(file.name)){setMessage("請選擇 .xlsx 或 .xls 檔案。");return;}try{const wb=XLSX.read(await file.arrayBuffer(),{type:"array",cellStyles:true});setBook(wb);setFileName(file.name);setSheetName(wb.SheetNames[0]??"");setResults(new Map());setProgress(0);setMessage("");}catch{setMessage("無法讀取檔案，請確認 Excel 沒有損壞或加密。");}}
  async function run(){if(!book||!rows.length)return;if(!colOk(urlCol)||!colOk(resultCol)){setMessage("請使用 Excel 欄名，例如 A、F 或 AA。");return;}setRunning(true);setProgress(0);setMessage("");const next=new Map<string,Result>();try{for(let i=0;i<unique.length;i+=20){const response=await fetch("/api/check",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({urls:unique.slice(i,i+20),timeoutMs:timeout*1000})});if(!response.ok)throw Error();const payload=await response.json() as {results:Result[]};payload.results.forEach(r=>next.set(r.url,r));setResults(new Map(next));setProgress(Math.round(Math.min(i+20,unique.length)/unique.length*100));}setMessage(`完成：已檢查 ${unique.length.toLocaleString()} 個唯一 URL。`);}catch{setMessage("檢查中斷；已完成的結果仍會保留，請稍後重試。");}finally{setRunning(false);}}
- function download(){if(!book||!results.size||!colOk(resultCol))return;const sheet=book.Sheets[sheetName],c=XLSX.utils.decode_col(resultCol);rows.forEach(({row,url})=>sheet[XLSX.utils.encode_cell({r:row,c})]={t:"s",v:display(results.get(url))});const rg=sheet["!ref"]?XLSX.utils.decode_range(sheet["!ref"]):{s:{r:0,c:0},e:{r:0,c:0}};rg.e.c=Math.max(rg.e.c,c);sheet["!ref"]=XLSX.utils.encode_range(rg);XLSX.writeFile(book,`${fileName.replace(/\.(xlsx|xls)$/i,"")} - checked.xlsx`,{compression:true});}
+ function download(){if(!book||!results.size||!colOk(resultCol))return;const sheet=book.Sheets[sheetName],c=XLSX.utils.decode_col(resultCol);rows.forEach(({row,url})=>{const result=results.get(url);const cell:XLSX.CellObject&{s:unknown}={t:"s",v:display(result),s:cellStyle(result)};sheet[XLSX.utils.encode_cell({r:row,c})]=cell});const rg=sheet["!ref"]?XLSX.utils.decode_range(sheet["!ref"]):{s:{r:0,c:0},e:{r:0,c:0}};rg.e.c=Math.max(rg.e.c,c);sheet["!ref"]=XLSX.utils.encode_range(rg);XLSXStyle.writeFile(book,`${fileName.replace(/\.(xlsx|xls)$/i,"")} - checked.xlsx`,{compression:true});}
  return <main><header className="topbar"><div className="brand"><span className="brandMark"><i/><i/><i/></span>LinkCheck</div><span className="privacy">檔案只在你的瀏覽器內處理</span></header>
  <section className="workspace"><div className={`dropzone ${drag?"dragging":""} ${fileName?"hasFile":""}`} role="button" tabIndex={0} onClick={()=>fileRef.current?.click()} onKeyDown={e=>(e.key==="Enter"||e.key===" ")&&fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);load(e.dataTransfer.files[0])}}>
  <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={e=>load(e.target.files?.[0])}/><div className="fileIcon">X</div><div><strong>{fileName||"拖放 Excel 到這裡"}</strong><p>{fileName?`${rows.length.toLocaleString()} 個 URL · ${unique.length.toLocaleString()} 個唯一 URL`:"或點擊選擇 .xlsx / .xls 檔案"}</p></div><button className="choose">{fileName?"更換檔案":"選擇檔案"}</button></div>
